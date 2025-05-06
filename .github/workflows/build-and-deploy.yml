@@ -1,0 +1,172 @@
+name: CI/CD Pipeline - Notas Venta App
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REPOSITORY: notasventa-app-739449
+  EXPEDIENTE: "739449"
+  APP_PORT: 3001
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - id: vars
+        run: |
+          RAW_BRANCH="${{ github.ref_name }}"
+          CLEAN_BRANCH=$(echo "$RAW_BRANCH" | sed -E 's:^(feature/|hotfix/|bugfix/|release/)::')
+          echo "branch_name=$CLEAN_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - run: echo "VERSION_TAG=1.0.${{ github.run_number }}-${{ steps.vars.outputs.branch_name }}" >> $GITHUB_ENV
+      
+      - run: echo "DOCKER_IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$VERSION_TAG" >> $GITHUB_ENV
+
+      - run: npm ci
+      
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-files
+          path: dist/
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-files
+          path: ./dist
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - id: vars
+        run: |
+          RAW_BRANCH="${{ github.ref_name }}"
+          CLEAN_BRANCH=$(echo "$RAW_BRANCH" | sed -E 's:^(feature/|hotfix/|bugfix/|release/)::')
+          echo "branch_name=$CLEAN_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - run: echo "VERSION_TAG=1.0.${{ github.run_number }}-${{ steps.vars.outputs.branch_name }}" >> $GITHUB_ENV
+      
+      - run: echo "DOCKER_IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.VERSION_TAG }}" >> $GITHUB_ENV
+      
+      - run: |
+          docker build -t ${{ env.ECR_REPOSITORY }}:latest .
+          docker tag ${{ env.ECR_REPOSITORY }}:latest $DOCKER_IMAGE
+          docker push $DOCKER_IMAGE
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: vars
+        run: |
+          RAW_BRANCH="${{ github.ref_name }}"
+          CLEAN_BRANCH=$(echo "$RAW_BRANCH" | sed -E 's:^(feature/|hotfix/|bugfix/|release/)::')
+          echo "branch_name=$CLEAN_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - run: echo "VERSION_TAG=1.0.${{ github.run_number }}-${{ steps.vars.outputs.branch_name }}" >> $GITHUB_ENV
+      
+      - run: echo "DOCKER_IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.VERSION_TAG }}" >> $GITHUB_ENV
+
+      - run: |
+          echo "${{ secrets.EC2_KEY }}" > /tmp/ssh_key.pem
+          chmod 600 /tmp/ssh_key.pem
+
+      - env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          # Generar variables de entorno para AWS en el servidor
+          cat > /tmp/aws_config.sh << EOF
+          aws configure set aws_access_key_id "${{ secrets.AWS_ACCESS_KEY_ID }}"
+          aws configure set aws_secret_access_key "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          aws configure set aws_session_token "${{ secrets.AWS_SESSION_TOKEN }}"
+          aws configure set region "${{ env.AWS_REGION }}"
+          
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          EOF
+          
+          scp -o StrictHostKeyChecking=no -i /tmp/ssh_key.pem /tmp/aws_config.sh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/aws_config.sh
+          ssh -o StrictHostKeyChecking=no -T -i /tmp/ssh_key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "chmod +x /home/${{ secrets.EC2_USER }}/aws_config.sh && bash /home/${{ secrets.EC2_USER }}/aws_config.sh"
+
+      - env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          # Generar script para el despliegue del contenedor
+          cat > /tmp/deploy_container.sh << EOF
+          # Detener y eliminar el contenedor si existe
+          docker stop notasventa-app || true
+          docker rm notasventa-app || true
+          
+          # Descargar la imagen más reciente
+          docker pull $DOCKER_IMAGE
+          
+          # Crear archivo .env para el contenedor
+          mkdir -p /home/${{ secrets.EC2_USER }}/app/config
+          cat > /home/${{ secrets.EC2_USER }}/app/.env << EOL
+          # AWS Configuration
+          AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION=${{ env.AWS_REGION }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}
+          
+          # Configuración de la aplicación
+          NODE_ENV=production
+          PORT=${{ env.APP_PORT }}
+          
+          # Configuración de la base de datos
+          DYNAMODB_TABLE=NotasVenta-Registro
+          
+          # Configuración de S3
+          S3_BUCKET_NAME=notasventa-${{ env.EXPEDIENTE }}
+          
+          # Información del despliegue
+          VERSION=${{ env.VERSION_TAG }}
+          EOL
+          
+          # Ejecutar el contenedor con las variables de entorno
+          docker run -d --name notasventa-app \\
+            -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \\
+            --env-file /home/${{ secrets.EC2_USER }}/app/.env \\
+            --restart unless-stopped \\
+            $DOCKER_IMAGE
+          EOF
+          
+          scp -o StrictHostKeyChecking=no -i /tmp/ssh_key.pem /tmp/deploy_container.sh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/deploy_container.sh
+          ssh -o StrictHostKeyChecking=no -T -i /tmp/ssh_key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "chmod +x /home/${{ secrets.EC2_USER }}/deploy_container.sh && bash /home/${{ secrets.EC2_USER }}/deploy_container.sh" 
