@@ -21,7 +21,7 @@ const DYNAMO_TABLE_NOTAS_VENTA = process.env.DYNAMO_TABLE_NOTAS_VENTA || 'examen
 const DYNAMO_TABLE_CONTENIDO_NOTAS_VENTA = process.env.DYNAMO_TABLE_CONTENIDO_NOTAS_VENTA || 'examen-1-contenido-de-nota-de-venta';
 const DYNAMO_TABLE_DOMICILIOS = process.env.DYNAMO_TABLE_DOMICILIOS || 'examen-1-domicilios';
 const DYNAMO_TABLE_PRODUCTOS = process.env.DYNAMO_TABLE_PRODUCTOS || 'examen-1-producto';
-const BUCKET_NAME = process.env.S3_BUCKET_NAME || '739449-esi3898l-examen1';
+const BUCKET_NAME = '739449-esi3898l-examen1';
 
 // URL del servicio de notificaciones
 const NOTIFICACIONES_SERVICE_URL = process.env.NOTIFICACIONES_SERVICE_URL || 'http://localhost:3002';
