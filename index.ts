@@ -24,7 +24,7 @@ const DYNAMO_TABLE_PRODUCTOS = process.env.DYNAMO_TABLE_PRODUCTOS || 'examen-1-p
 const BUCKET_NAME = '739449-esi3898l-examen1';
 
 // URL del servicio de notificaciones
-const NOTIFICACIONES_SERVICE_URL = process.env.NOTIFICACIONES_SERVICE_URL || 'http://localhost:3002';
+const NOTIFICACIONES_SERVICE_URL = process.env.NOTIFICACIONES_SERVICE_URL || 'http://98.81.87.1:3002';
 
 // Inicializar Express
 const app = express();
