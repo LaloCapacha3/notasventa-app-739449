@@ -152,6 +152,7 @@ jobs:
           
           # Configuración de la base de datos
           DYNAMODB_TABLE=NotasVenta-Registro
+          NOTIFICACIONES_SERVICE_URL=${{ secrets.EC2_HOST }}
           
           # Configuración de S3
           S3_BUCKET_NAME=notasventa-${{ env.EXPEDIENTE }}
